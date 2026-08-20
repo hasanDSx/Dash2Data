@@ -321,7 +321,7 @@ if st.button("Extract data and reconstruct dataset", type="primary", use_contain
                     null_threshold=null_tolerance / 100
                 )
 
-                df = pd.DataFrame(data_json)
+                df = pd.DataFrame(data_json).reset_index(drop=True)
                 elapsed_time = round(time.time() - start_time, 2)
 
                 st.success("Dataset synthesized and validated.")
@@ -380,7 +380,7 @@ if "raw_df" in st.session_state:
             key="dataset_editor"
         )
 
-    final_df = edited_df if selected_columns else base_df
+    final_df = (edited_df if selected_columns else base_df).reset_index(drop=True)
 
     st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
 
