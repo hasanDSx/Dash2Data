@@ -1,9 +1,45 @@
 import json
 import random
+import time
 import numpy as np
 import pandas as pd
 from google import genai
 from google.genai import types
+
+
+# ---------------------------------------------------------
+# Transient-error retry wrapper
+# ---------------------------------------------------------
+_TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "500", "INTERNAL")
+
+
+class TransientAPIError(RuntimeError):
+    """Raised when Gemini keeps failing with a transient/overload error after all retries."""
+    pass
+
+
+def _call_gemini_with_retry(client, model, contents, config, max_retries=4, base_delay=2.0):
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as e:
+            last_error = e
+            is_transient = any(marker in str(e) for marker in _TRANSIENT_MARKERS)
+            if is_transient and attempt < max_retries - 1:
+                # Exponential backoff with a little jitter so retries don't
+                # all land in the same instant if several users hit this at once.
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+                continue
+            if is_transient:
+                raise TransientAPIError(
+                    "Gemini is currently overloaded and kept rejecting the request "
+                    f"even after {max_retries} attempts. This is a temporary issue on "
+                    "Google's side, not a bug in the app — wait a minute and try again."
+                ) from e
+            raise
+    raise last_error
 
 
 # ---------------------------------------------------------
@@ -201,6 +237,74 @@ def enforce_data_realism(records: list, num_rows: int, seed: int | None = None) 
 
 
 # ---------------------------------------------------------
+# Error classification — turns raw exception text into a short,
+# plain-language explanation the UI can show without exposing
+# stack traces or raw API error payloads to end users.
+# ---------------------------------------------------------
+def classify_error(e: Exception) -> dict:
+    text = str(e)
+
+    if isinstance(e, TransientAPIError):
+        return {
+            "title": "Gemini is temporarily busy",
+            "message": "The app already retried automatically a few times. "
+                       "This is a short-lived issue on Google's side, not a problem "
+                       "with your images — wait a moment and try again.",
+            "technical": text,
+        }
+
+    if isinstance(e, json.JSONDecodeError):
+        return {
+            "title": "Couldn't read the model's response",
+            "message": "Gemini returned something the app couldn't parse. This "
+                       "usually clears up on retry — if it keeps happening, try a "
+                       "sharper screenshot with clearer, more legible numbers.",
+            "technical": text,
+        }
+
+    if any(k in text for k in ("API_KEY_INVALID", "PERMISSION_DENIED", "401", "403")):
+        return {
+            "title": "API key problem",
+            "message": "Your Gemini API key looks invalid, expired, or missing the "
+                       "right permissions. Double check it in your `.env` file or "
+                       "Streamlit secrets.",
+            "technical": text,
+        }
+
+    if any(k in text for k in ("QUOTA", "RESOURCE_EXHAUSTED", "429")):
+        return {
+            "title": "Usage limit reached",
+            "message": "You've hit the request limit for your Gemini API key. "
+                       "Check your quota or billing in Google AI Studio, or try "
+                       "again after it resets.",
+            "technical": text,
+        }
+
+    if any(k in text for k in ("DEADLINE_EXCEEDED", "timeout", "Timeout")):
+        return {
+            "title": "Request timed out",
+            "message": "The request took too long to complete. Try again, or "
+                       "upload fewer/smaller images at once.",
+            "technical": text,
+        }
+
+    if any(k in text for k in ("ConnectionError", "Failed to establish", "Name or service not known", "NewConnectionError")):
+        return {
+            "title": "Couldn't reach Gemini",
+            "message": "The app couldn't connect to Google's servers. Check your "
+                       "internet connection and try again.",
+            "technical": text,
+        }
+
+    return {
+        "title": "Something went wrong",
+        "message": "An unexpected error occurred while processing your request. "
+                   "Try again, and if it keeps happening, reach out for help.",
+        "technical": text,
+    }
+
+
+# ---------------------------------------------------------
 # Main extraction entry point
 # ---------------------------------------------------------
 def extract_dashboard_data(
@@ -224,7 +328,8 @@ def extract_dashboard_data(
         contents.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
     contents.append(prompt)
 
-    response = client.models.generate_content(
+    response = _call_gemini_with_retry(
+        client=client,
         model='gemini-3.6-flash',
         contents=contents,
         config=types.GenerateContentConfig(
