@@ -27,115 +27,160 @@ if not API_KEY:
 # Page Configuration
 st.set_page_config(
     page_title="Dash2Data - Dashboard to Dataset Extractor",
-    page_icon="📊",
+    page_icon=":bar_chart:",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ---------------------------------------------------------
 # Custom Modern Styling (CSS Injection)
+#
+# Design tokens — one accent (blue), one neutral scale, semantic
+# colors reserved for status only. No gradients, no emoji, no
+# decorative shadows.
 # ---------------------------------------------------------
 st.markdown("""
     <style>
-    .stApp {
-        background-color: #0d1117;
-        color: #c9d1d9;
+    :root {
+        --bg-page: #0d1117;
+        --bg-surface: #12161c;
+        --bg-surface-2: #161b22;
+        --border-default: #2a303a;
+        --text-primary: #e6e8eb;
+        --text-secondary: #8b949e;
+        --text-muted: #6e7681;
+        --accent: #4c8dff;
+        --accent-bg: rgba(76, 141, 255, 0.10);
+        --accent-border: rgba(76, 141, 255, 0.35);
+        --success: #3fb950;
+        --success-bg: rgba(63, 185, 80, 0.10);
+        --success-border: rgba(63, 185, 80, 0.30);
+        --warning: #d29922;
+        --warning-bg: rgba(210, 153, 34, 0.10);
+        --warning-border: rgba(210, 153, 34, 0.30);
+        --danger: #e5534b;
     }
-    
+
+    .stApp {
+        background-color: var(--bg-page);
+        color: var(--text-primary);
+    }
+
     section[data-testid="stSidebar"] {
-        background-color: #161b22 !important;
-        border-right: 1px solid #30363d;
+        background-color: var(--bg-surface-2) !important;
+        border-right: 1px solid var(--border-default);
+    }
+
+    /* Section eyebrow — small caps label above a heading */
+    .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        color: var(--accent);
+        background-color: var(--accent-bg);
+        border: 1px solid var(--accent-border);
+        border-radius: 6px;
+        padding: 3px 10px;
     }
 
     .custom-card {
-        background-color: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 10px;
+        background-color: var(--bg-surface);
+        border: 1px solid var(--border-default);
+        border-radius: 8px;
         padding: 16px;
         margin-bottom: 16px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     }
 
-    .badge-green {
-        background-color: rgba(46, 160, 67, 0.15);
-        color: #3fb950;
-        border: 1px solid rgba(46, 160, 67, 0.4);
-        font-size: 11px;
-        padding: 3px 8px;
-        border-radius: 12px;
-        font-weight: 600;
-        display: inline-block;
+    .card-title {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+        margin: 0;
     }
 
-    .badge-blue {
-        background-color: rgba(56, 139, 253, 0.15);
-        color: #58a6ff;
-        border: 1px solid rgba(56, 139, 253, 0.4);
-        font-size: 11px;
-        padding: 3px 8px;
-        border-radius: 12px;
-        font-weight: 600;
-        display: inline-block;
-    }
-
-    .badge-purple {
-        background-color: rgba(163, 113, 247, 0.15);
-        color: #bc8cff;
-        border: 1px solid rgba(163, 113, 247, 0.4);
-        font-size: 11px;
-        padding: 3px 8px;
-        border-radius: 12px;
-        font-weight: 600;
-        display: inline-block;
-    }
-
-    .badge-timer {
-        background-color: rgba(210, 153, 34, 0.15);
-        color: #d29922;
-        border: 1px solid rgba(210, 153, 34, 0.4);
+    .card-subtitle {
         font-size: 12px;
-        padding: 4px 10px;
-        border-radius: 12px;
-        font-weight: 600;
+        color: var(--text-secondary);
+        margin: 2px 0 0 0;
+    }
+
+    .tag {
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: 6px;
         display: inline-block;
+        white-space: nowrap;
+    }
+    .tag-accent {
+        background-color: var(--accent-bg);
+        color: var(--accent);
+        border: 1px solid var(--accent-border);
+    }
+    .tag-success {
+        background-color: var(--success-bg);
+        color: var(--success);
+        border: 1px solid var(--success-border);
+    }
+    .tag-warning {
+        background-color: var(--warning-bg);
+        color: var(--warning);
+        border: 1px solid var(--warning-border);
+    }
+
+    .field-note {
+        font-size: 11px;
+        color: var(--text-muted);
+        border-top: 1px solid var(--border-default);
+        padding-top: 8px;
+        margin-top: 10px;
     }
 
     .social-link {
         display: flex;
         align-items: center;
         gap: 8px;
-        color: #58a6ff !important;
+        color: var(--text-secondary) !important;
         text-decoration: none;
         margin-top: 8px;
         font-size: 13px;
-        transition: color 0.2s ease;
+        transition: color 0.15s ease;
     }
     .social-link:hover {
-        color: #79c0ff !important;
+        color: var(--accent) !important;
+    }
+    .social-link .dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background-color: var(--text-muted);
+        flex-shrink: 0;
     }
 
     div.stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
-        border: 1px solid rgba(240, 246, 252, 0.1);
-        border-radius: 8px;
-        font-weight: 600;
-        letter-spacing: 0.3px;
-        transition: all 0.2s ease;
+        background-color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        font-weight: 500;
+        transition: background-color 0.15s ease;
     }
     div.stButton > button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #2ea043 0%, #3fb950 100%);
-        box-shadow: 0 4px 12px rgba(46, 160, 67, 0.3);
+        background-color: #3d7de0;
+        border-color: #3d7de0;
     }
 
     div[data-baseweb="input"] {
-        background-color: #0d1117 !important;
-        border-color: #30363d !important;
-        border-radius: 8px !important;
+        background-color: var(--bg-page) !important;
+        border-color: var(--border-default) !important;
+        border-radius: 6px !important;
     }
     div[data-baseweb="select"] > div {
-        background-color: #0d1117 !important;
-        border-color: #30363d !important;
-        border-radius: 8px !important;
+        background-color: var(--bg-page) !important;
+        border-color: var(--border-default) !important;
+        border-radius: 6px !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -144,54 +189,58 @@ st.markdown("""
 # Sidebar Section
 # ---------------------------------------------------------
 with st.sidebar:
-    st.markdown("<h2 style='font-size: 20px; font-weight: 700; margin-bottom: 20px;'>⚙️ Control Panel</h2>", unsafe_allow_html=True)
-    
+    st.markdown(
+        "<p style='font-size: 15px; font-weight: 500; color: var(--text-primary); margin-bottom: 18px;'>Control panel</p>",
+        unsafe_allow_html=True
+    )
+
     # Engine Details Card
     st.markdown("""
         <div class="custom-card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <strong style="color: #f0f6fc; font-size: 14px;">Engine Details</strong>
-                <span class="badge-green">Vision AI</span>
+                <p class="card-title">Engine details</p>
+                <span class="tag tag-accent">Vision AI</span>
             </div>
-            <p style="font-size: 13px; margin: 0; color: #8b949e;">
-                <strong>Model:</strong> <code style="color: #58a6ff;">Gemini 3.6 Flash</code>
+            <p style="font-size: 13px; margin: 0 0 8px 0; color: var(--text-secondary);">
+                Model: <code style="color: var(--accent);">Gemini 3.6 Flash</code>
             </p>
-            <ul style="font-size: 12px; color: #8b949e; padding-left: 18px; margin-top: 8px; margin-bottom: 8px;">
-                <li>Multimodal Structure Extraction</li>
-                <li>KPI & Metric Matching</li>
+            <ul style="font-size: 12px; color: var(--text-secondary); padding-left: 18px; margin: 0;">
+                <li>Multimodal structure extraction</li>
+                <li>KPI and metric matching</li>
             </ul>
-            <div style="font-size: 11px; color: #6e7681; border-top: 1px solid #21262d; padding-top: 8px; margin-top: 6px;">
-                💡 <em>Notice model issues? Contact via email.</em>
-            </div>
+            <p class="field-note">Notice model issues? Contact via email.</p>
         </div>
     """, unsafe_allow_html=True)
 
     # Extraction Settings Card
-    st.markdown("<p style='font-size: 14px; font-weight: 600; color: #f0f6fc; margin-bottom: 8px;'>🛠️ Extraction Parameters</p>", unsafe_allow_html=True)
-    
+    st.markdown(
+        "<p style='font-size: 13px; font-weight: 500; color: var(--text-primary); margin-bottom: 8px;'>Extraction parameters</p>",
+        unsafe_allow_html=True
+    )
+
     num_rows = st.number_input(
-        "Number of rows to generate:", 
-        min_value=10, 
-        max_value=1000, 
-        value=50, 
+        "Number of rows to generate",
+        min_value=10,
+        max_value=1000,
+        value=50,
         step=10,
         help="Specify how many records should be synthesized while preserving overall visual totals."
     )
-    
+
     export_filename = st.text_input(
-        "Export File Base Name:", 
+        "Export file base name",
         value="extracted_dashboard_data",
         help="Custom prefix for output CSV and Excel files."
     )
 
     date_format = st.selectbox(
-        "Preferred Date Format:",
+        "Preferred date format",
         ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY"],
         help="Standardize extracted date columns into this format."
     )
 
     include_nulls = st.checkbox(
-        "Allow Synthetic Noise / Nulls", 
+        "Allow synthetic noise / nulls",
         value=False,
         help="Simulate real-world messy dataset behavior by introducing occasional missing values."
     )
@@ -201,19 +250,19 @@ with st.sidebar:
     # Developer Card
     st.markdown("""
         <div class="custom-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <strong style="color: #f0f6fc; font-size: 14px;">Hasan</strong>
-                <span class="badge-blue">Developer</span>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <p class="card-title">Hasan</p>
+                <span class="tag tag-accent">Developer</span>
             </div>
-            <p style="font-size: 12px; color: #8b949e; margin-bottom: 12px;">BI & Machine Learning Specialist</p>
+            <p class="card-subtitle" style="margin-bottom: 10px;">BI and machine learning specialist</p>
             <a class="social-link" href="https://github.com/hasanDSx" target="_blank">
-                <img src="https://cdn-icons-png.flaticon.com/512/25/25231.png" width="15" height="15" style="filter: invert(0.8);"> GitHub Profile
+                <span class="dot"></span> GitHub profile
             </a>
             <a class="social-link" href="https://www.linkedin.com/in/hasanmuhammed14/" target="_blank">
-                <img src="https://cdn-icons-png.flaticon.com/512/174/174857.png" width="15" height="15"> LinkedIn Profile
+                <span class="dot"></span> LinkedIn profile
             </a>
             <a class="social-link" href="mailto:hasan.m.abdelaty@gmail.com">
-                <img src="https://cdn-icons-png.flaticon.com/512/732/732200.png" width="15" height="15"> Contact Email
+                <span class="dot"></span> Contact email
             </a>
         </div>
     """, unsafe_allow_html=True)
@@ -223,15 +272,17 @@ with st.sidebar:
 # ---------------------------------------------------------
 st.markdown("""
     <div style="margin-bottom: 24px;">
-        <span class="badge-purple" style="margin-bottom: 8px;">Automated Data Re-engineering</span>
-        <h1 style="font-size: 28px; font-weight: 700; color: #f0f6fc; margin: 0;">📊 Dash2Data Workspace</h1>
-        <p style="color: #8b949e; font-size: 14px; margin-top: 4px;">Upload dashboard screenshots. Gemini Vision will reverse-engineer underlying tabular datasets matching visual KPIs.</p>
+        <span class="eyebrow">Automated data re-engineering</span>
+        <h1 style="font-size: 26px; font-weight: 500; color: var(--text-primary); margin: 12px 0 6px 0;">Dash2Data workspace</h1>
+        <p style="color: var(--text-secondary); font-size: 14px; margin: 0; max-width: 640px; line-height: 1.6;">
+            Upload dashboard screenshots. Gemini Vision reverse-engineers the underlying tabular datasets that match your visual KPIs.
+        </p>
     </div>
 """, unsafe_allow_html=True)
 
 uploaded_files = st.file_uploader(
-    "Choose dashboard images (PNG, JPG, JPEG):", 
-    type=["png", "jpg", "jpeg"], 
+    "Choose dashboard images (PNG, JPG, JPEG)",
+    type=["png", "jpg", "jpeg"],
     accept_multiple_files=True
 )
 
@@ -242,11 +293,11 @@ if uploaded_files:
 
 st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
 
-if st.button("🚀 Extract Data & Reconstruct Dataset", type="primary", use_container_width=True):
+if st.button("Extract data and reconstruct dataset", type="primary", use_container_width=True):
     if not API_KEY:
-        st.error("🔑 API Key is missing! Please configure it in your `.env` file or Streamlit Secrets.")
+        st.error("API key is missing. Add it to your `.env` file or Streamlit secrets.")
     elif not uploaded_files:
-        st.warning("⚠️ Please upload at least one dashboard screenshot first.")
+        st.warning("Upload at least one dashboard screenshot first.")
     else:
         with st.spinner("Analyzing dashboard visuals and reconstructing mathematical relationships..."):
             try:
@@ -263,12 +314,12 @@ if st.button("🚀 Extract Data & Reconstruct Dataset", type="primary", use_cont
                 df = pd.DataFrame(data_json)
                 elapsed_time = round(time.time() - start_time, 2)
 
-                st.success("✅ Dataset synthesized and validated successfully!")
+                st.success("Dataset synthesized and validated.")
 
                 st.markdown(f"""
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px; margin-bottom: 10px;">
-                        <h3 style="font-size: 18px; color: #f0f6fc; margin: 0;">📋 Dataset Preview</h3>
-                        <span class="badge-timer">⚡ Execution Time: <strong>{elapsed_time}s</strong></span>
+                        <p style="font-size: 16px; font-weight: 500; color: var(--text-primary); margin: 0;">Dataset preview</p>
+                        <span class="tag tag-warning">Execution time: {elapsed_time}s</span>
                     </div>
                 """, unsafe_allow_html=True)
 
@@ -278,7 +329,7 @@ if st.button("🚀 Extract Data & Reconstruct Dataset", type="primary", use_cont
 
                 csv_data = df.to_csv(index=False).encode('utf-8')
                 col1.download_button(
-                    label="📥 Download CSV Dataset",
+                    label="Download CSV dataset",
                     data=csv_data,
                     file_name=f"{export_filename}.csv",
                     mime="text/csv",
@@ -291,7 +342,7 @@ if st.button("🚀 Extract Data & Reconstruct Dataset", type="primary", use_cont
                 excel_data = excel_buffer.getvalue()
 
                 col2.download_button(
-                    label="📊 Download Excel Workbook (.xlsx)",
+                    label="Download Excel workbook (.xlsx)",
                     data=excel_data,
                     file_name=f"{export_filename}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -300,4 +351,4 @@ if st.button("🚀 Extract Data & Reconstruct Dataset", type="primary", use_cont
 
             except Exception as e:
                 st.error(f"An error occurred during processing: {str(e)}")
-                st.info("📩 If this issue persists, please reach out to **hasan.m.abdelaty@gmail.com**.")
+                st.info("If this issue persists, reach out to **hasan.m.abdelaty@gmail.com**.")
