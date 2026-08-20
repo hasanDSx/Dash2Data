@@ -245,6 +245,15 @@ with st.sidebar:
         help="Simulate real-world messy dataset behavior by introducing occasional missing values."
     )
 
+    null_tolerance = st.slider(
+        "Column null tolerance",
+        min_value=0,
+        max_value=50,
+        value=0,
+        step=5,
+        help="A column is dropped automatically if more than this percentage of its values are blank or unreliable. Keep at 0 to require every column to be fully populated."
+    )
+
     st.markdown("<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True)
 
     # Developer Card
@@ -305,16 +314,28 @@ if st.button("Extract data and reconstruct dataset", type="primary", use_contain
 
                 images_data = [(file.getvalue(), file.type) for file in uploaded_files]
 
-                data_json = extract_dashboard_data(
+                data_json, dropped_columns = extract_dashboard_data(
                     images_data=images_data,
                     api_key=API_KEY,
-                    num_rows=num_rows
+                    num_rows=num_rows,
+                    null_threshold=null_tolerance / 100
                 )
 
                 df = pd.DataFrame(data_json)
                 elapsed_time = round(time.time() - start_time, 2)
 
                 st.success("Dataset synthesized and validated.")
+
+                if dropped_columns:
+                    st.warning(
+                        "Dropped these columns automatically because they had "
+                        f"too many blank or unreliable values: {', '.join(dropped_columns)}. "
+                        "Raise the column null tolerance in the sidebar if you'd rather keep them."
+                    )
+
+                # Keep the raw extraction around so manual edits below always
+                # start from the same baseline if the user resets.
+                st.session_state["raw_df"] = df
 
                 st.markdown(f"""
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px; margin-bottom: 10px;">
@@ -325,30 +346,64 @@ if st.button("Extract data and reconstruct dataset", type="primary", use_contain
 
                 st.dataframe(df, use_container_width=True)
 
-                col1, col2 = st.columns(2)
-
-                csv_data = df.to_csv(index=False).encode('utf-8')
-                col1.download_button(
-                    label="Download CSV dataset",
-                    data=csv_data,
-                    file_name=f"{export_filename}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-
-                excel_buffer = io.BytesIO()
-                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False, sheet_name='Dashboard Data')
-                excel_data = excel_buffer.getvalue()
-
-                col2.download_button(
-                    label="Download Excel workbook (.xlsx)",
-                    data=excel_data,
-                    file_name=f"{export_filename}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-
             except Exception as e:
                 st.error(f"An error occurred during processing: {str(e)}")
                 st.info("If this issue persists, reach out to **hasan.m.abdelaty@gmail.com**.")
+
+# ---------------------------------------------------------
+# Additional Controls — manual review and adjustment before export
+# ---------------------------------------------------------
+if "raw_df" in st.session_state:
+    base_df = st.session_state["raw_df"]
+
+    st.markdown(
+        "<p style='font-size: 16px; font-weight: 500; color: var(--text-primary); margin: 28px 0 4px 0;'>Additional controls</p>"
+        "<p style='font-size: 13px; color: var(--text-secondary); margin: 0 0 14px 0;'>"
+        "Review and adjust the generated data before you download it."
+        "</p>",
+        unsafe_allow_html=True
+    )
+
+    with st.expander("Select columns to include", expanded=False):
+        selected_columns = st.multiselect(
+            "Columns to keep in the export",
+            options=list(base_df.columns),
+            default=list(base_df.columns)
+        )
+
+    with st.expander("Edit values directly", expanded=False):
+        st.caption("Double-click a cell to edit it. Right-click a row to delete it.")
+        edited_df = st.data_editor(
+            base_df[selected_columns] if selected_columns else base_df,
+            use_container_width=True,
+            num_rows="dynamic",
+            key="dataset_editor"
+        )
+
+    final_df = edited_df if selected_columns else base_df
+
+    st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    csv_data = final_df.to_csv(index=False).encode('utf-8')
+    col1.download_button(
+        label="Download CSV dataset",
+        data=csv_data,
+        file_name=f"{export_filename}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        final_df.to_excel(writer, index=False, sheet_name='Dashboard Data')
+    excel_data = excel_buffer.getvalue()
+
+    col2.download_button(
+        label="Download Excel workbook (.xlsx)",
+        data=excel_data,
+        file_name=f"{export_filename}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
