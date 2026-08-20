@@ -4,7 +4,7 @@ import time
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-from llm_helper import extract_dashboard_data
+from llm_helper import extract_dashboard_data, classify_error
 
 # ---------------------------------------------------------
 # Environment & API Key Configuration
@@ -59,6 +59,8 @@ st.markdown("""
         --warning-bg: rgba(210, 153, 34, 0.10);
         --warning-border: rgba(210, 153, 34, 0.30);
         --danger: #e5534b;
+        --danger-bg: rgba(229, 83, 75, 0.10);
+        --danger-border: rgba(229, 83, 75, 0.30);
     }
 
     .stApp {
@@ -185,6 +187,35 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+
+# ---------------------------------------------------------
+# Status card — a single, consistently styled way to show success,
+# info, warning, and error states. Replaces raw st.error/st.warning
+# calls so users never see a technical stack trace or API payload.
+# ---------------------------------------------------------
+def render_status_card(kind: str, title: str, message: str, technical: str | None = None) -> None:
+    palette = {
+        "danger": ("var(--danger)", "var(--danger-bg)", "var(--danger-border)"),
+        "warning": ("var(--warning)", "var(--warning-bg)", "var(--warning-border)"),
+        "success": ("var(--success)", "var(--success-bg)", "var(--success-border)"),
+        "info": ("var(--accent)", "var(--accent-bg)", "var(--accent-border)"),
+    }
+    text_color, bg_color, border_color = palette.get(kind, palette["info"])
+
+    st.markdown(f"""
+        <div style="background-color: {bg_color}; border: 1px solid {border_color};
+                    border-left: 3px solid {text_color}; border-radius: 8px;
+                    padding: 12px 16px; margin: 10px 0;">
+            <p style="margin: 0 0 3px 0; font-size: 14px; font-weight: 500; color: {text_color};">{title}</p>
+            <p style="margin: 0; font-size: 13px; color: var(--text-secondary); line-height: 1.55;">{message}</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if technical:
+        with st.expander("Technical details"):
+            st.code(technical, language="text")
+
+
 # ---------------------------------------------------------
 # Sidebar Section
 # ---------------------------------------------------------
@@ -304,9 +335,17 @@ st.markdown("<div style='margin-top: 16px;'></div>", unsafe_allow_html=True)
 
 if st.button("Extract data and reconstruct dataset", type="primary", use_container_width=True):
     if not API_KEY:
-        st.error("API key is missing. Add it to your `.env` file or Streamlit secrets.")
+        render_status_card(
+            "danger",
+            "API key not configured",
+            "Add your Gemini API key to the `.env` file or your Streamlit secrets, then try again."
+        )
     elif not uploaded_files:
-        st.warning("Upload at least one dashboard screenshot first.")
+        render_status_card(
+            "warning",
+            "No screenshot uploaded",
+            "Upload at least one dashboard image (PNG, JPG, or JPEG) before extracting data."
+        )
     else:
         with st.spinner("Analyzing dashboard visuals and reconstructing mathematical relationships..."):
             try:
@@ -324,13 +363,15 @@ if st.button("Extract data and reconstruct dataset", type="primary", use_contain
                 df = pd.DataFrame(data_json).reset_index(drop=True)
                 elapsed_time = round(time.time() - start_time, 2)
 
-                st.success("Dataset synthesized and validated.")
+                render_status_card("success", "Dataset ready", "The dataset was synthesized and validated against the dashboard's numbers.")
 
                 if dropped_columns:
-                    st.warning(
-                        "Dropped these columns automatically because they had "
-                        f"too many blank or unreliable values: {', '.join(dropped_columns)}. "
-                        "Raise the column null tolerance in the sidebar if you'd rather keep them."
+                    render_status_card(
+                        "warning",
+                        "Some columns were dropped",
+                        "These had too many blank or unreliable values, so they were removed "
+                        f"automatically: {', '.join(dropped_columns)}. Raise the column null "
+                        "tolerance in the sidebar if you'd rather keep them."
                     )
 
                 # Keep the raw extraction around so manual edits below always
@@ -347,8 +388,8 @@ if st.button("Extract data and reconstruct dataset", type="primary", use_contain
                 st.dataframe(df, use_container_width=True)
 
             except Exception as e:
-                st.error(f"An error occurred during processing: {str(e)}")
-                st.info("If this issue persists, reach out to **hasan.m.abdelaty@gmail.com**.")
+                info = classify_error(e)
+                render_status_card("danger", info["title"], info["message"], technical=info["technical"])
 
 # ---------------------------------------------------------
 # Additional Controls — manual review and adjustment before export
