@@ -27,8 +27,6 @@ def _call_gemini_with_retry(client, model, contents, config, max_retries=4, base
             last_error = e
             is_transient = any(marker in str(e) for marker in _TRANSIENT_MARKERS)
             if is_transient and attempt < max_retries - 1:
-                # Exponential backoff with a little jitter so retries don't
-                # all land in the same instant if several users hit this at once.
                 delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                 time.sleep(delay)
                 continue
@@ -45,7 +43,25 @@ def _call_gemini_with_retry(client, model, contents, config, max_retries=4, base
 # ---------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------
-def _build_prompt(num_rows: int) -> str:
+def _build_prompt(num_rows: int, total_documents: int | None = None) -> str:
+    sample_rule = ""
+    if total_documents and total_documents > num_rows:
+        fraction = num_rows / total_documents
+        sample_rule = f"""
+10. IMPORTANT — SAMPLE, NOT THE FULL POPULATION: the dashboard represents
+    approximately {total_documents} real underlying transactions/documents,
+    but you are only generating {num_rows} rows (about {fraction:.2%} of that
+    volume). Do NOT force the full-period KPI totals onto these {num_rows}
+    rows — that produces impossibly large single orders (e.g. one row with
+    tens of thousands of units, when a real single order would have a
+    normal, human-scale quantity). Instead:
+    - Generate rows with realistic, human-scale per-order quantities and
+      amounts, consistent with what a single real transaction of this kind
+      would plausibly look like.
+    - The SUM of your {num_rows} rows should approximate roughly
+      {fraction:.2%} of each KPI total shown on the dashboard (i.e. a
+      proportional slice), not 100% of it.
+"""
     return f"""
 You are an expert data analyst and AI vision specialist reconstructing the
 underlying dataset behind one or more dashboard screenshots.
@@ -73,11 +89,15 @@ Follow these rules strictly:
    and generate realistic synthetic data across EXACTLY {num_rows} rows —
    not fewer, not more.
 
-5. Never repeat the exact same combination of financial figures (e.g. Revenue,
-   Cost, Profit) across two different rows, even for the same customer. Every
-   transaction should have its own plausible variation in quantity and price,
-   the way real sales data would never show two different products selling
-   for the identical exact total.
+5. Every row must represent a DISTINCT real-world order/transaction event.
+   Never repeat the exact same combination of (Date, Customer, Item) across
+   two different rows, and never repeat the exact same combination of
+   financial figures (Revenue, Cost, Profit) or the exact same Quantity
+   across two different rows — even for the same customer. Every
+   transaction should have its own plausible variation in date, quantity,
+   and price, the way real sales data would never show the same customer
+   buying the same item on the same day with the same quantity more than
+   once.
 
 6. Profit margin (profit divided by revenue) must vary meaningfully by
    product category, reflecting realistic cost structures — for example,
@@ -90,11 +110,11 @@ Follow these rules strictly:
 
 8. When the generated rows are aggregated (grouped, summed, averaged), the
    resulting totals must closely match the top-level KPI cards and chart
-   totals shown in the image(s).
+   totals shown in the image(s) — subject to rule 10 below if it applies.
 
 9. Before finalizing, review your own column list and drop any column where
    you were unsure of the value for more than a couple of rows.
-
+{sample_rule}
 Return ONLY a JSON array of flat objects, one object per row, with identical
 keys across all objects. No markdown, no commentary, no surrounding text.
 """
@@ -140,7 +160,7 @@ def clean_records(records: list, null_threshold: float = 0.0) -> tuple[list, lis
 
 
 # ---------------------------------------------------------
-# Numeric column detection
+# Column role detection
 # ---------------------------------------------------------
 def _guess_financial_columns(df: pd.DataFrame) -> dict:
     """
@@ -164,17 +184,87 @@ def _guess_financial_columns(df: pd.DataFrame) -> dict:
     }
 
 
+def _guess_dimension_columns(df: pd.DataFrame) -> dict:
+    """
+    Best-effort guess at which columns identify a unique transaction: the
+    date it happened, who bought, what was bought, and how many units.
+    Used to detect and break up duplicate "orders" created either by the
+    model itself or by row-count padding.
+    """
+    cols_lower = {c: c.lower() for c in df.columns}
+
+    def find(*keywords):
+        for col, low in cols_lower.items():
+            if any(k in low for k in keywords):
+                return col
+        return None
+
+    quantity_col = None
+    for col, low in cols_lower.items():
+        if pd.api.types.is_numeric_dtype(df[col]) and any(k in low for k in ("quantity", "qty", "units")):
+            quantity_col = col
+            break
+
+    return {
+        "date": find("date", "day"),
+        "customer": find("customer", "client", "account"),
+        "item": find("item", "product", "sku"),
+        "quantity": quantity_col,
+    }
+
+
 # ---------------------------------------------------------
-# Realism enforcement — fixes patterns an LLM tends to fall into even
-# with a strict prompt: identical repeated financial figures across rows,
-# and a flat, unrealistic profit margin applied to every category alike.
+# Realism enforcement — fixes patterns an LLM (and naive row-count padding)
+# tend to fall into even with a strict prompt:
+#   - identical repeated (date, customer, item, quantity) "orders"
+#   - a flat, unrealistic profit margin applied to every category alike
+#   - totals that balloon once duplicate rows are added to hit num_rows
 # ---------------------------------------------------------
-def enforce_data_realism(records: list, num_rows: int, seed: int | None = None) -> list:
+def enforce_data_realism(
+    records: list,
+    num_rows: int,
+    seed: int | None = None,
+    total_documents: int | None = None,
+) -> list:
     if not records:
         return records
 
     rng = np.random.default_rng(seed)
-    df = pd.DataFrame(records).reset_index(drop=True)
+    raw_df = pd.DataFrame(records).reset_index(drop=True)
+
+    fin = _guess_financial_columns(raw_df)
+    dims = _guess_dimension_columns(raw_df)
+    revenue_col, cost_col, profit_col, category_col = (
+        fin["revenue"], fin["cost"], fin["profit"], fin["category"]
+    )
+    date_col, customer_col, item_col, quantity_col = (
+        dims["date"], dims["customer"], dims["item"], dims["quantity"]
+    )
+
+    # --- Anchor targets are captured from the model's RAW output, BEFORE any
+    #     row-count padding/trimming happens below. This is the key fix:
+    #     previously these sums were captured *after* padding, so duplicating
+    #     rows to reach num_rows silently inflated the "target" total that
+    #     everything else got rescaled to match. ---
+    original_revenue_sum = raw_df[revenue_col].sum() if revenue_col else None
+    original_cost_sum = raw_df[cost_col].sum() if (revenue_col and cost_col) else None
+    original_quantity_sum = raw_df[quantity_col].sum() if quantity_col else None
+
+    # If the dashboard represents far more real transactions than num_rows,
+    # treat the generated rows as a proportional SAMPLE: scale the anchor
+    # totals down to that fraction, so each row keeps a human-scale,
+    # realistic size instead of a few rows being forced to carry an entire
+    # year's volume.
+    if total_documents and total_documents > num_rows:
+        sample_fraction = num_rows / total_documents
+        if original_revenue_sum is not None:
+            original_revenue_sum *= sample_fraction
+        if original_cost_sum is not None:
+            original_cost_sum *= sample_fraction
+        if original_quantity_sum is not None:
+            original_quantity_sum *= sample_fraction
+
+    df = raw_df
 
     # --- 1. Force the row count to exactly match what was requested ---
     current_n = len(df)
@@ -185,35 +275,55 @@ def enforce_data_realism(records: list, num_rows: int, seed: int | None = None) 
         keep_idx = rng.choice(current_n, size=num_rows, replace=False)
         df = df.iloc[sorted(keep_idx)].reset_index(drop=True)
 
-    fin = _guess_financial_columns(df)
-    revenue_col, cost_col, profit_col, category_col = (
-        fin["revenue"], fin["cost"], fin["profit"], fin["category"]
-    )
+    n = len(df)
+
+    # --- 1b. Break up rows that are now literal duplicates of another row on
+    #         the business key (date, customer, item). This catches both
+    #         duplicates the model itself produced AND duplicates introduced
+    #         by the padding step above. A real business essentially never
+    #         places the exact same order twice, so every occurrence after
+    #         the first gets a jittered quantity and a nudged date. ---
+    key_cols = [c for c in (date_col, customer_col, item_col) if c]
+    if key_cols:
+        dup_mask = df.duplicated(subset=key_cols, keep="first")
+        dup_positions = np.where(dup_mask.values)[0]
+
+        if len(dup_positions) and quantity_col:
+            q_noise = rng.normal(loc=1.0, scale=0.15, size=len(dup_positions))
+            q_noise = np.clip(q_noise, 0.6, 1.5)
+            df.loc[dup_positions, quantity_col] = np.maximum(
+                1, (df.loc[dup_positions, quantity_col].values * q_noise).round()
+            ).astype(int)
+
+        if len(dup_positions) and date_col:
+            try:
+                parsed = pd.to_datetime(df[date_col], errors="coerce")
+                offsets = rng.integers(-10, 11, size=len(dup_positions))
+                new_dates = parsed.iloc[dup_positions] + pd.to_timedelta(offsets, unit="D")
+                df.loc[dup_positions, date_col] = new_dates.dt.strftime("%Y-%m-%d")
+            except Exception:
+                pass  # date column wasn't parseable — leave as-is rather than corrupt it
 
     # If we can't confidently identify revenue + at least one of cost/profit,
-    # skip financial realism adjustments — row-count enforcement above still
-    # applies, but we won't risk corrupting columns we can't interpret.
+    # skip financial realism adjustments — row-count/duplicate fixes above
+    # still apply, but we won't risk corrupting columns we can't interpret.
     if revenue_col and (cost_col or profit_col):
-        n = len(df)
-        original_revenue_sum = df[revenue_col].sum()
-        original_cost_sum = df[cost_col].sum() if cost_col else None
-
         # --- 2. Break exact duplicate revenue figures with small jitter,
-        #        then rescale so the overall total is preserved (keeps the
-        #        dashboard-matching totals from the prompt requirement intact) ---
+        #        then rescale to the pre-padding (and, if applicable,
+        #        sample-scaled) anchor total — never to the inflated total
+        #        that padding would otherwise produce. ---
         noise = rng.normal(loc=1.0, scale=0.06, size=n)
         noise = np.clip(noise, 0.85, 1.15)
         adjusted_revenue = df[revenue_col] * noise
-        rescale = original_revenue_sum / adjusted_revenue.sum() if adjusted_revenue.sum() else 1
+        target_revenue_sum = original_revenue_sum if original_revenue_sum else adjusted_revenue.sum()
+        rescale = target_revenue_sum / adjusted_revenue.sum() if adjusted_revenue.sum() else 1
         df[revenue_col] = (adjusted_revenue * rescale).round(2)
 
         # --- 3. Assign each category its own base profit margin (stable
         #        per category name), then add small row-level variance ---
         if category_col:
             categories = df[category_col].astype(str).unique()
-            category_margins = {
-                cat: rng.uniform(0.15, 0.45) for cat in categories
-            }
+            category_margins = {cat: rng.uniform(0.15, 0.45) for cat in categories}
             base_margin = df[category_col].astype(str).map(category_margins)
         else:
             base_margin = pd.Series(rng.uniform(0.15, 0.45), index=df.index)
@@ -222,16 +332,25 @@ def enforce_data_realism(records: list, num_rows: int, seed: int | None = None) 
 
         if cost_col:
             adjusted_cost = df[revenue_col] * (1 - row_margin)
-            if original_cost_sum:
-                cost_rescale = original_cost_sum / adjusted_cost.sum() if adjusted_cost.sum() else 1
-                adjusted_cost = adjusted_cost * cost_rescale
-            df[cost_col] = adjusted_cost.round(2)
+            target_cost_sum = original_cost_sum if original_cost_sum else adjusted_cost.sum()
+            cost_rescale = target_cost_sum / adjusted_cost.sum() if adjusted_cost.sum() else 1
+            df[cost_col] = (adjusted_cost * cost_rescale).round(2)
 
         # --- 4. Recompute profit so it always equals revenue minus cost ---
         if profit_col and cost_col:
             df[profit_col] = (df[revenue_col] - df[cost_col]).round(2)
         elif profit_col:
             df[profit_col] = (df[revenue_col] * row_margin).round(2)
+
+    # --- 5. Keep Quantity anchored the same way as revenue/cost, so it
+    #        doesn't silently balloon from padding either, and so the
+    #        implied unit price (revenue / quantity) stays plausible. ---
+    if quantity_col and original_quantity_sum:
+        q_noise = rng.normal(loc=1.0, scale=0.05, size=n)
+        q_noise = np.clip(q_noise, 0.9, 1.1)
+        adjusted_qty = df[quantity_col] * q_noise
+        q_rescale = original_quantity_sum / adjusted_qty.sum() if adjusted_qty.sum() else 1
+        df[quantity_col] = np.maximum(1, (adjusted_qty * q_rescale).round()).astype(int)
 
     return df.to_dict(orient="records")
 
@@ -312,16 +431,24 @@ def extract_dashboard_data(
     api_key: str,
     num_rows: int = 50,
     null_threshold: float = 0.0,
+    total_documents: int | None = None,
 ) -> tuple[list, list]:
     """
     Extracts a synthetic tabular dataset matching the KPIs shown in the
     provided dashboard screenshot(s).
 
+    total_documents: if you know (or can read off a KPI card, e.g.
+    "Documents: 61,079") the real number of underlying transactions the
+    dashboard represents, pass it here. When it's larger than num_rows,
+    the generated rows are treated as a proportional sample instead of
+    being forced to carry the full period's totals — this is what keeps
+    individual row quantities/amounts realistic instead of absurdly large.
+
     Returns (records, dropped_columns) where dropped_columns lists any
     columns the model produced that were removed for being blank/unreliable.
     """
     client = genai.Client(api_key=api_key)
-    prompt = _build_prompt(num_rows)
+    prompt = _build_prompt(num_rows, total_documents=total_documents)
 
     contents = []
     for img_bytes, mime_type in images_data:
@@ -350,6 +477,8 @@ def extract_dashboard_data(
 
     records = json.loads(response_text.strip())
     cleaned_records, dropped_columns = clean_records(records, null_threshold=null_threshold)
-    realistic_records = enforce_data_realism(cleaned_records, num_rows=num_rows)
+    realistic_records = enforce_data_realism(
+        cleaned_records, num_rows=num_rows, total_documents=total_documents
+    )
 
     return realistic_records, dropped_columns
