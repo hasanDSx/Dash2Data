@@ -1,5 +1,6 @@
 import json
 import random
+import re
 import time
 import numpy as np
 import pandas as pd
@@ -41,7 +42,8 @@ def _call_gemini_with_retry(client, model, contents, config, max_retries=4, base
 
 
 # ---------------------------------------------------------
-# Prompt construction
+# Prompt construction — domain-agnostic. Says nothing about "sales"
+# specifically; works the same for a sales, HR, marketing, or ops dashboard.
 # ---------------------------------------------------------
 def _build_prompt(num_rows: int, total_documents: int | None = None) -> str:
     sample_rule = ""
@@ -49,22 +51,23 @@ def _build_prompt(num_rows: int, total_documents: int | None = None) -> str:
         fraction = num_rows / total_documents
         sample_rule = f"""
 10. IMPORTANT — SAMPLE, NOT THE FULL POPULATION: the dashboard represents
-    approximately {total_documents} real underlying transactions/documents,
+    approximately {total_documents} real underlying records/transactions,
     but you are only generating {num_rows} rows (about {fraction:.2%} of that
     volume). Do NOT force the full-period KPI totals onto these {num_rows}
-    rows — that produces impossibly large single orders (e.g. one row with
-    tens of thousands of units, when a real single order would have a
-    normal, human-scale quantity). Instead:
-    - Generate rows with realistic, human-scale per-order quantities and
-      amounts, consistent with what a single real transaction of this kind
-      would plausibly look like.
+    rows — that produces impossibly large single records (e.g. one row
+    worth what should be hundreds of real ones). Instead:
+    - Generate rows with realistic, human-scale per-record values, consistent
+      with what a single real record of this kind would plausibly look like.
     - The SUM of your {num_rows} rows should approximate roughly
-      {fraction:.2%} of each KPI total shown on the dashboard (i.e. a
+      {fraction:.2%} of each KPI total shown on the dashboard (a
       proportional slice), not 100% of it.
 """
     return f"""
 You are an expert data analyst and AI vision specialist reconstructing the
-underlying dataset behind one or more dashboard screenshots.
+underlying row-level dataset behind one or more dashboard screenshots. The
+dashboard could be about any domain — sales, HR, marketing, operations,
+finance, logistics, etc. Infer the schema entirely from what is visible;
+do not assume any fixed set of column names.
 
 Follow these rules strictly:
 
@@ -74,39 +77,44 @@ Follow these rules strictly:
 
 2. A KPI card that shows a single aggregate (e.g. a "LY" or "YTD" badge on a
    summary card) is a single overall number, not a per-row breakdown. Do NOT
-   create a per-row column for it (e.g. "Country_Total_LY") unless the image
-   also shows that value broken down per row (e.g. a chart or table with one
-   LY figure per country/category). If you cannot assign a real, distinct
-   value to every single row for a column, leave that column out entirely
-   rather than filling it with nulls or placeholders.
+   create a per-row column for it unless the image also shows that value
+   broken down per row (e.g. a chart or table with one figure per
+   category/entity). If you cannot assign a real, distinct value to every
+   single row for a column, leave that column out entirely rather than
+   filling it with nulls or placeholders.
 
 3. Never output empty strings, "N/A", "null", or placeholder values for any
    cell. Every cell in every column you include must have a real, concrete
    value consistent with the rest of that row.
 
-4. Infer the row-level columns needed to recreate the detailed charts/tables
-   (e.g. Date, Region, Product, Category, Customer, Sales, Profit, Quantity),
-   and generate realistic synthetic data across EXACTLY {num_rows} rows —
-   not fewer, not more.
+4. Infer whatever row-level columns are needed to recreate the detailed
+   charts/tables shown (dates, entities/customers/employees, categories,
+   products/items, amounts, counts, statuses — whatever applies to this
+   specific dashboard), and generate realistic synthetic data across EXACTLY
+   {num_rows} rows — not fewer, not more.
 
-5. Every row must represent a DISTINCT real-world order/transaction event.
-   Never repeat the exact same combination of (Date, Customer, Item) across
-   two different rows, and never repeat the exact same combination of
-   financial figures (Revenue, Cost, Profit) or the exact same Quantity
-   across two different rows — even for the same customer. Every
-   transaction should have its own plausible variation in date, quantity,
-   and price, the way real sales data would never show the same customer
-   buying the same item on the same day with the same quantity more than
-   once.
+5. Every row must represent a DISTINCT real-world record/event. Never repeat
+   the exact same combination of (date, entity, category/item) across two
+   different rows, and never repeat the exact same combination of numeric
+   values (e.g. amount, cost, profit, or any other measure columns) — even
+   for the same entity. Every record should have its own plausible
+   variation, the way real data would never show the same entity with the
+   same category on the same day with the same numbers more than once.
 
-6. Profit margin (profit divided by revenue) must vary meaningfully by
-   product category, reflecting realistic cost structures — for example,
-   electronics typically carry tighter margins than consumables or apparel.
-   Do not use the same margin percentage across unrelated categories.
+6. If there is an ID / document / reference / order-number style column,
+   treat each distinct ID as ONE real-world record: every row sharing the
+   same ID must also share the exact same date and the exact same entity
+   (customer/employee/etc.) — an ID can never span two different dates or
+   two different entities. If you generate multiple rows that logically
+   belong to the same real event (e.g. multiple line items on one invoice),
+   they must share both the ID and the date; anything else must get its own
+   distinct ID.
 
-7. Keep basic arithmetic internally consistent within each row (e.g. a
-   profit/cost figure should equal revenue minus cost, and a unit count times
-   an implied unit price should roughly equal the row's revenue).
+7. If multiple numeric columns are related (e.g. a total that equals another
+   column minus/plus a third), keep that arithmetic internally consistent
+   within each row. Rates, ratios, or margins derived from those columns
+   should vary meaningfully across categories/segments rather than being a
+   single flat percentage applied everywhere.
 
 8. When the generated rows are aggregated (grouped, summed, averaged), the
    resulting totals must closely match the top-level KPI cards and chart
@@ -136,11 +144,6 @@ def _is_blank(value) -> bool:
 def clean_records(records: list, null_threshold: float = 0.0) -> tuple[list, list]:
     """
     Removes columns that are entirely (or mostly, per null_threshold) blank.
-
-    null_threshold: fraction of rows allowed to be blank before a column is
-    dropped. 0.0 (default) drops a column if even a single value is blank —
-    use a higher value (e.g. 0.3) to tolerate some missing data.
-
     Returns (cleaned_records, dropped_column_names).
     """
     if not records:
@@ -160,64 +163,119 @@ def clean_records(records: list, null_threshold: float = 0.0) -> tuple[list, lis
 
 
 # ---------------------------------------------------------
-# Column role detection
+# Generic schema inference — no assumptions about domain or naming
+# convention beyond broad, cross-domain synonym lists. This is what makes
+# the pipeline reusable for any dashboard, not just a sales dashboard.
 # ---------------------------------------------------------
-def _guess_financial_columns(df: pd.DataFrame) -> dict:
-    """
-    Best-effort guess at which columns represent revenue, cost, and profit,
-    based on common naming patterns. Returns keys that may be None if a
-    role couldn't be identified — callers must check before using them.
-    """
+def _find_col(df: pd.DataFrame, keywords, numeric_only: bool = False) -> str | None:
     cols_lower = {c: c.lower() for c in df.columns}
+    for col, low in cols_lower.items():
+        if numeric_only and not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        if any(k in low for k in keywords):
+            return col
+    return None
 
-    def find(*keywords):
-        for col, low in cols_lower.items():
-            if pd.api.types.is_numeric_dtype(df[col]) and any(k in low for k in keywords):
-                return col
-        return None
 
-    return {
-        "revenue": find("revenue", "sales", "amount"),
-        "cost": find("cogs", "cost"),
-        "profit": find("profit", "margin_value", "grossprofit"),
-        "category": next((c for c in df.columns if "categor" in c.lower()), None),
-    }
+def _guess_measure_columns(df: pd.DataFrame) -> dict:
+    """
+    Guess which numeric columns form a (total, part_a, part_b) triplet such
+    as Revenue/Cost/Profit, Income/Expense/Net, Budget/Spend/Remaining, etc.
+    Tries broad cross-domain keywords first; if that doesn't confidently
+    resolve, falls back to detecting the relationship purely from the
+    numbers themselves (total ≈ a ± b across most rows), so the pipeline
+    still works even with unfamiliar column names.
+    """
+    total_col = _find_col(df, ("revenue", "sales", "income", "amount", "value", "budget"), numeric_only=True)
+    minus_col = _find_col(df, ("cogs", "cost", "expense", "spend"), numeric_only=True)
+    plus_col = _find_col(df, ("profit", "margin_value", "grossprofit", "net", "surplus", "earnings"), numeric_only=True)
+    category_col = _find_col(df, ("categor", "segment", "type", "group", "department"))
+
+    if total_col and (minus_col or plus_col):
+        return {"total": total_col, "minus": minus_col, "plus": plus_col, "category": category_col}
+
+    # Fallback: search all numeric-triplets for an arithmetic relationship.
+    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    for total_c in numeric_cols:
+        for a in numeric_cols:
+            if a == total_c:
+                continue
+            for b in numeric_cols:
+                if b in (total_c, a):
+                    continue
+                tol = max(df[total_c].abs().mean() * 0.02, 1e-6)
+                if ((df[total_c] - (a and df[a] - df[b])).abs() < tol).mean() > 0.9:
+                    return {"total": total_c, "minus": b, "plus": a, "category": category_col}
+    return {"total": total_col, "minus": minus_col, "plus": plus_col, "category": category_col}
 
 
 def _guess_dimension_columns(df: pd.DataFrame) -> dict:
     """
-    Best-effort guess at which columns identify a unique transaction: the
-    date it happened, who bought, what was bought, and how many units.
-    Used to detect and break up duplicate "orders" created either by the
-    model itself or by row-count padding.
+    Guess which columns identify a unique record: when it happened, who/what
+    it's about, what it concerns, a quantity/count, and any ID/reference
+    column tying line items together. Broad synonyms make this domain
+    agnostic (works for sales orders, HR records, support tickets, etc).
     """
-    cols_lower = {c: c.lower() for c in df.columns}
+    date_col = _find_col(df, ("date", "day", "period", "timestamp"))
+    entity_col = _find_col(df, ("customer", "client", "account", "employee", "vendor", "user", "member", "company"))
+    item_col = _find_col(df, ("item", "product", "sku", "service", "material", "task"))
+    quantity_col = _find_col(df, ("quantity", "qty", "units", "count", "volume"), numeric_only=True)
 
-    def find(*keywords):
-        for col, low in cols_lower.items():
-            if any(k in low for k in keywords):
-                return col
-        return None
-
-    quantity_col = None
-    for col, low in cols_lower.items():
-        if pd.api.types.is_numeric_dtype(df[col]) and any(k in low for k in ("quantity", "qty", "units")):
-            quantity_col = col
+    id_col = None
+    id_candidates = [
+        c for c in df.columns
+        if any(k in c.lower() for k in ("doc", "invoice", "order", "reference", "transaction", "ticket", "receipt", "record", "id", "no", "number"))
+    ]
+    for c in id_candidates:
+        vals = df[c].astype(str)
+        # A genuine ID/document column: alphanumeric-code-like, and NOT
+        # unique on every single row necessarily (line items can share one),
+        # but also not identical everywhere.
+        looks_code_like = vals.str.match(r'^[A-Za-z]*\d+[A-Za-z]*$').mean() > 0.8
+        reasonable_cardinality = 0 < df[c].nunique() < len(df)
+        if looks_code_like or reasonable_cardinality:
+            id_col = c
             break
 
     return {
-        "date": find("date", "day"),
-        "customer": find("customer", "client", "account"),
-        "item": find("item", "product", "sku"),
+        "date": date_col,
+        "entity": entity_col,
+        "item": item_col,
         "quantity": quantity_col,
+        "doc_id": id_col,
     }
 
 
+def _next_ids(existing_ids: pd.Series, count: int) -> list:
+    """
+    Generate `count` brand-new IDs that follow the same alphanumeric pattern
+    as existing_ids (prefix + zero-padded number + suffix), continuing after
+    the highest number already in use. Falls back to a generic scheme if no
+    numeric pattern is detected, so this works for any ID format.
+    """
+    pattern = re.compile(r'^(\D*)(\d+)(\D*)$')
+    parsed = []
+    for val in existing_ids.astype(str):
+        m = pattern.match(val)
+        if m:
+            parsed.append((m.group(1), int(m.group(2)), len(m.group(2)), m.group(3)))
+
+    if parsed:
+        prefix, _, width, suffix = max(parsed, key=lambda t: t[1])
+        start = max(p[1] for p in parsed) + 1
+        return [f"{prefix}{str(start + i).zfill(width)}{suffix}" for i in range(count)]
+
+    base = str(existing_ids.iloc[0]) if len(existing_ids) else "REC"
+    return [f"{base}-NEW{i + 1}" for i in range(count)]
+
+
 # ---------------------------------------------------------
-# Realism enforcement — fixes patterns an LLM (and naive row-count padding)
-# tend to fall into even with a strict prompt:
-#   - identical repeated (date, customer, item, quantity) "orders"
-#   - a flat, unrealistic profit margin applied to every category alike
+# Realism enforcement — domain-agnostic fixes for patterns an LLM (and
+# naive row-count padding) tend to fall into:
+#   - identical repeated (date, entity, item, quantity) "records"
+#   - an ID/document column spanning multiple dates or entities, which is
+#     never valid for ANY kind of document (invoice, ticket, record...)
+#   - a flat, unrealistic rate/margin applied to every category alike
 #   - totals that balloon once duplicate rows are added to hit num_rows
 # ---------------------------------------------------------
 def enforce_data_realism(
@@ -232,37 +290,29 @@ def enforce_data_realism(
     rng = np.random.default_rng(seed)
     raw_df = pd.DataFrame(records).reset_index(drop=True)
 
-    fin = _guess_financial_columns(raw_df)
+    measures = _guess_measure_columns(raw_df)
     dims = _guess_dimension_columns(raw_df)
-    revenue_col, cost_col, profit_col, category_col = (
-        fin["revenue"], fin["cost"], fin["profit"], fin["category"]
+    total_col, minus_col, plus_col, category_col = (
+        measures["total"], measures["minus"], measures["plus"], measures["category"]
     )
-    date_col, customer_col, item_col, quantity_col = (
-        dims["date"], dims["customer"], dims["item"], dims["quantity"]
+    date_col, entity_col, item_col, quantity_col, doc_id_col = (
+        dims["date"], dims["entity"], dims["item"], dims["quantity"], dims["doc_id"]
     )
 
-    # --- Anchor targets are captured from the model's RAW output, BEFORE any
-    #     row-count padding/trimming happens below. This is the key fix:
-    #     previously these sums were captured *after* padding, so duplicating
-    #     rows to reach num_rows silently inflated the "target" total that
-    #     everything else got rescaled to match. ---
-    original_revenue_sum = raw_df[revenue_col].sum() if revenue_col else None
-    original_cost_sum = raw_df[cost_col].sum() if (revenue_col and cost_col) else None
+    # --- Anchors captured from the RAW model output, BEFORE any row-count
+    #     padding/trimming. Duplicating rows later must never inflate these. ---
+    original_total_sum = raw_df[total_col].sum() if total_col else None
+    original_minus_sum = raw_df[minus_col].sum() if (total_col and minus_col) else None
     original_quantity_sum = raw_df[quantity_col].sum() if quantity_col else None
 
-    # If the dashboard represents far more real transactions than num_rows,
-    # treat the generated rows as a proportional SAMPLE: scale the anchor
-    # totals down to that fraction, so each row keeps a human-scale,
-    # realistic size instead of a few rows being forced to carry an entire
-    # year's volume.
     if total_documents and total_documents > num_rows:
-        sample_fraction = num_rows / total_documents
-        if original_revenue_sum is not None:
-            original_revenue_sum *= sample_fraction
-        if original_cost_sum is not None:
-            original_cost_sum *= sample_fraction
+        fraction = num_rows / total_documents
+        if original_total_sum is not None:
+            original_total_sum *= fraction
+        if original_minus_sum is not None:
+            original_minus_sum *= fraction
         if original_quantity_sum is not None:
-            original_quantity_sum *= sample_fraction
+            original_quantity_sum *= fraction
 
     df = raw_df
 
@@ -277,13 +327,11 @@ def enforce_data_realism(
 
     n = len(df)
 
-    # --- 1b. Break up rows that are now literal duplicates of another row on
-    #         the business key (date, customer, item). This catches both
-    #         duplicates the model itself produced AND duplicates introduced
-    #         by the padding step above. A real business essentially never
-    #         places the exact same order twice, so every occurrence after
-    #         the first gets a jittered quantity and a nudged date. ---
-    key_cols = [c for c in (date_col, customer_col, item_col) if c]
+    # --- 1b. Break up rows that are literal duplicates of another row on the
+    #         (date, entity, item) business key — whether the model produced
+    #         them or padding introduced them. Every occurrence after the
+    #         first gets a jittered quantity and a nudged date. ---
+    key_cols = [c for c in (date_col, entity_col, item_col) if c]
     if key_cols:
         dup_mask = df.duplicated(subset=key_cols, keep="first")
         dup_positions = np.where(dup_mask.values)[0]
@@ -302,49 +350,60 @@ def enforce_data_realism(
                 new_dates = parsed.iloc[dup_positions] + pd.to_timedelta(offsets, unit="D")
                 df.loc[dup_positions, date_col] = new_dates.dt.strftime("%Y-%m-%d")
             except Exception:
-                pass  # date column wasn't parseable — leave as-is rather than corrupt it
+                pass
 
-    # If we can't confidently identify revenue + at least one of cost/profit,
-    # skip financial realism adjustments — row-count/duplicate fixes above
-    # still apply, but we won't risk corrupting columns we can't interpret.
-    if revenue_col and (cost_col or profit_col):
-        # --- 2. Break exact duplicate revenue figures with small jitter,
-        #        then rescale to the pre-padding (and, if applicable,
-        #        sample-scaled) anchor total — never to the inflated total
-        #        that padding would otherwise produce. ---
+    # --- 1c. Enforce document/ID integrity, generically: whatever the ID
+    #         column is called (Doc_No, Invoice_ID, Ticket #, ...), every row
+    #         sharing an ID must share the same date/entity/item. If step 1b
+    #         (or the model itself) left an ID spanning multiple dates or
+    #         entities, give every row after the first occurrence in that ID
+    #         group a fresh ID that follows the existing naming pattern. ---
+    if doc_id_col and key_cols:
+        rows_needing_new_id = []
+        for _doc_id, group in df.groupby(doc_id_col, sort=False):
+            if len(group) > 1 and group[key_cols].nunique(dropna=False).gt(1).any():
+                rows_needing_new_id.extend(group.index[1:].tolist())
+        if rows_needing_new_id:
+            new_ids = _next_ids(df[doc_id_col], len(rows_needing_new_id))
+            df.loc[rows_needing_new_id, doc_id_col] = new_ids
+
+    # If we can't confidently identify a total + at least one related
+    # column, skip financial realism adjustments — the structural fixes
+    # above still apply regardless.
+    if total_col and (minus_col or plus_col):
+        # --- 2. Break exact duplicate totals with small jitter, then
+        #        rescale to the pre-padding (and, if applicable,
+        #        sample-scaled) anchor — never to an inflated padded total. ---
         noise = rng.normal(loc=1.0, scale=0.06, size=n)
         noise = np.clip(noise, 0.85, 1.15)
-        adjusted_revenue = df[revenue_col] * noise
-        target_revenue_sum = original_revenue_sum if original_revenue_sum else adjusted_revenue.sum()
-        rescale = target_revenue_sum / adjusted_revenue.sum() if adjusted_revenue.sum() else 1
-        df[revenue_col] = (adjusted_revenue * rescale).round(2)
+        adjusted_total = df[total_col] * noise
+        target_total_sum = original_total_sum if original_total_sum else adjusted_total.sum()
+        rescale = target_total_sum / adjusted_total.sum() if adjusted_total.sum() else 1
+        df[total_col] = (adjusted_total * rescale).round(2)
 
-        # --- 3. Assign each category its own base profit margin (stable
-        #        per category name), then add small row-level variance ---
+        # --- 3. Per-category rate/margin, varied rather than flat ---
         if category_col:
             categories = df[category_col].astype(str).unique()
-            category_margins = {cat: rng.uniform(0.15, 0.45) for cat in categories}
-            base_margin = df[category_col].astype(str).map(category_margins)
+            category_rates = {cat: rng.uniform(0.15, 0.45) for cat in categories}
+            base_rate = df[category_col].astype(str).map(category_rates)
         else:
-            base_margin = pd.Series(rng.uniform(0.15, 0.45), index=df.index)
+            base_rate = pd.Series(rng.uniform(0.15, 0.45), index=df.index)
+        row_rate = (base_rate + rng.normal(0, 0.02, n)).clip(0.05, 0.65)
 
-        row_margin = (base_margin + rng.normal(0, 0.02, n)).clip(0.05, 0.65)
+        if minus_col:
+            adjusted_minus = df[total_col] * (1 - row_rate)
+            target_minus_sum = original_minus_sum if original_minus_sum else adjusted_minus.sum()
+            minus_rescale = target_minus_sum / adjusted_minus.sum() if adjusted_minus.sum() else 1
+            df[minus_col] = (adjusted_minus * minus_rescale).round(2)
 
-        if cost_col:
-            adjusted_cost = df[revenue_col] * (1 - row_margin)
-            target_cost_sum = original_cost_sum if original_cost_sum else adjusted_cost.sum()
-            cost_rescale = target_cost_sum / adjusted_cost.sum() if adjusted_cost.sum() else 1
-            df[cost_col] = (adjusted_cost * cost_rescale).round(2)
+        # --- 4. Recompute the derived column so the arithmetic always holds ---
+        if plus_col and minus_col:
+            df[plus_col] = (df[total_col] - df[minus_col]).round(2)
+        elif plus_col:
+            df[plus_col] = (df[total_col] * row_rate).round(2)
 
-        # --- 4. Recompute profit so it always equals revenue minus cost ---
-        if profit_col and cost_col:
-            df[profit_col] = (df[revenue_col] - df[cost_col]).round(2)
-        elif profit_col:
-            df[profit_col] = (df[revenue_col] * row_margin).round(2)
-
-    # --- 5. Keep Quantity anchored the same way as revenue/cost, so it
-    #        doesn't silently balloon from padding either, and so the
-    #        implied unit price (revenue / quantity) stays plausible. ---
+    # --- 5. Keep quantity anchored the same way, so it doesn't silently
+    #        balloon from padding either. ---
     if quantity_col and original_quantity_sum:
         q_noise = rng.normal(loc=1.0, scale=0.05, size=n)
         q_noise = np.clip(q_noise, 0.9, 1.1)
@@ -435,14 +494,15 @@ def extract_dashboard_data(
 ) -> tuple[list, list]:
     """
     Extracts a synthetic tabular dataset matching the KPIs shown in the
-    provided dashboard screenshot(s).
+    provided dashboard screenshot(s). Works for any dashboard domain — the
+    schema (columns, entities, measures) is inferred purely from the images
+    and from the generated data itself, not assumed in advance.
 
     total_documents: if you know (or can read off a KPI card, e.g.
-    "Documents: 61,079") the real number of underlying transactions the
-    dashboard represents, pass it here. When it's larger than num_rows,
-    the generated rows are treated as a proportional sample instead of
-    being forced to carry the full period's totals — this is what keeps
-    individual row quantities/amounts realistic instead of absurdly large.
+    "Documents: 61,079" / "Tickets: 4,200" / any count) the real number of
+    underlying records the dashboard represents, pass it here. When it's
+    larger than num_rows, generated rows are treated as a proportional
+    sample instead of being forced to carry the full period's totals.
 
     Returns (records, dropped_columns) where dropped_columns lists any
     columns the model produced that were removed for being blank/unreliable.
@@ -467,7 +527,6 @@ def extract_dashboard_data(
 
     response_text = response.text.strip()
 
-    # Defensive cleanup in case the model still wraps output in fences.
     if response_text.startswith("```json"):
         response_text = response_text[7:]
     if response_text.startswith("```"):
