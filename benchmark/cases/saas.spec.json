@@ -1,0 +1,247 @@
+{
+ "title": "SaaS Subscriptions",
+ "fact_table": "Fact_Subscriptions",
+ "currency": "$",
+ "date": {
+  "name": "Start Date",
+  "start": "2022-01-01",
+  "end": "2023-12-31"
+ },
+ "dimensions": [
+  {
+   "name": "Plan",
+   "values": [
+    "Free",
+    "Pro",
+    "Enterprise"
+   ]
+  },
+  {
+   "name": "Country",
+   "values": [
+    "US",
+    "UK",
+    "DE",
+    "EG",
+    "IN"
+   ]
+  },
+  {
+   "name": "Account",
+   "values": [],
+   "cardinality": 900
+  }
+ ],
+ "id_columns": [
+  {
+   "name": "SubscriptionID"
+  }
+ ],
+ "fact_columns": [
+  {
+   "name": "MRR",
+   "kind": "money"
+  },
+  {
+   "name": "Seats",
+   "kind": "quantity"
+  },
+  {
+   "name": "Churn Risk",
+   "kind": "rate",
+   "min": 0,
+   "max": 1
+  }
+ ],
+ "measures": [
+  {
+   "name": "Total MRR",
+   "kind": "agg",
+   "agg": "SUM",
+   "column": "MRR",
+   "format": "currency"
+  },
+  {
+   "name": "ARR",
+   "kind": "agg",
+   "agg": "SUM",
+   "column": "MRR",
+   "format": "currency"
+  },
+  {
+   "name": "Accounts",
+   "kind": "agg",
+   "agg": "DISTINCTCOUNT",
+   "column": "Account",
+   "format": "number"
+  },
+  {
+   "name": "Total Seats",
+   "kind": "agg",
+   "agg": "SUM",
+   "column": "Seats",
+   "format": "number"
+  },
+  {
+   "name": "MRR per Seat",
+   "kind": "ratio",
+   "num": "Total MRR",
+   "den": "Total Seats",
+   "format": "decimal"
+  },
+  {
+   "name": "Avg Churn Risk",
+   "kind": "agg",
+   "agg": "AVERAGE",
+   "column": "Churn Risk",
+   "format": "percent"
+  },
+  {
+   "name": "Pro MRR",
+   "kind": "agg",
+   "agg": "SUM",
+   "column": "MRR",
+   "format": "currency",
+   "filters": [
+    {
+     "column": "Plan",
+     "value": "Pro"
+    }
+   ]
+  }
+ ],
+ "targets": [
+  {
+   "measure": "Total MRR",
+   "value": 250000,
+   "source": "kpi",
+   "label": "MRR"
+  },
+  {
+   "measure": "Accounts",
+   "value": 900,
+   "source": "kpi",
+   "label": "Accounts"
+  },
+  {
+   "measure": "Total Seats",
+   "value": 4200,
+   "source": "kpi",
+   "label": "Seats"
+  },
+  {
+   "measure": "Avg Churn Risk",
+   "value": 0.18,
+   "source": "kpi",
+   "label": "Avg Churn Risk"
+  },
+  {
+   "measure": "Total MRR",
+   "value": 0,
+   "source": "chart",
+   "label": "MRR by Plan",
+   "filters": [
+    {
+     "column": "Plan",
+     "value": "Free"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 90000,
+   "source": "chart",
+   "label": "MRR by Plan",
+   "filters": [
+    {
+     "column": "Plan",
+     "value": "Pro"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 160000,
+   "source": "chart",
+   "label": "MRR by Plan",
+   "filters": [
+    {
+     "column": "Plan",
+     "value": "Enterprise"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 120000,
+   "source": "chart",
+   "label": "MRR by Year",
+   "filters": [
+    {
+     "column": "Year",
+     "value": "2022"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 130000,
+   "source": "chart",
+   "label": "MRR by Year",
+   "filters": [
+    {
+     "column": "Year",
+     "value": "2023"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 70000,
+   "source": "chart",
+   "label": "MRR by Country (top 3)",
+   "filters": [
+    {
+     "column": "Country",
+     "value": "US"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 40000,
+   "source": "chart",
+   "label": "MRR by Country (top 3)",
+   "filters": [
+    {
+     "column": "Country",
+     "value": "UK"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 30000,
+   "source": "chart",
+   "label": "MRR by Country (top 3)",
+   "filters": [
+    {
+     "column": "Country",
+     "value": "DE"
+    }
+   ]
+  },
+  {
+   "measure": "Total MRR",
+   "value": 9000,
+   "source": "chart",
+   "label": "Q1 2023",
+   "filters": [
+    {
+     "column": "YearMonth",
+     "value": "2023-01"
+    }
+   ]
+  }
+ ]
+}
