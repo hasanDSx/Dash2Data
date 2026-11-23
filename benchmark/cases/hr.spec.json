@@ -1,0 +1,189 @@
+{
+ "title": "HR Headcount",
+ "fact_table": "Fact_Employees",
+ "currency": "$",
+ "date": {
+  "name": "Hire Date",
+  "start": "2020-01-01",
+  "end": "2023-12-31"
+ },
+ "dimensions": [
+  {
+   "name": "Department",
+   "values": [
+    "Engineering",
+    "Sales",
+    "Support",
+    "Finance"
+   ]
+  },
+  {
+   "name": "Gender",
+   "values": [
+    "Female",
+    "Male"
+   ]
+  },
+  {
+   "name": "Level",
+   "values": [
+    "Junior",
+    "Mid",
+    "Senior"
+   ]
+  }
+ ],
+ "id_columns": [
+  {
+   "name": "EmployeeID"
+  }
+ ],
+ "fact_columns": [
+  {
+   "name": "Salary",
+   "kind": "money",
+   "min": 20000
+  },
+  {
+   "name": "Bonus",
+   "kind": "money",
+   "derived_from": "Salary",
+   "derived_ratio": 0.08
+  },
+  {
+   "name": "Tenure Years",
+   "kind": "number",
+   "min": 0,
+   "max": 20
+  }
+ ],
+ "measures": [
+  {
+   "name": "Headcount",
+   "kind": "agg",
+   "agg": "COUNTROWS",
+   "format": "number"
+  },
+  {
+   "name": "Total Salary",
+   "kind": "agg",
+   "agg": "SUM",
+   "column": "Salary",
+   "format": "currency"
+  },
+  {
+   "name": "Avg Salary",
+   "kind": "agg",
+   "agg": "AVERAGE",
+   "column": "Salary",
+   "format": "currency"
+  },
+  {
+   "name": "Total Bonus",
+   "kind": "agg",
+   "agg": "SUM",
+   "column": "Bonus",
+   "format": "currency"
+  },
+  {
+   "name": "Bonus %",
+   "kind": "ratio",
+   "num": "Total Bonus",
+   "den": "Total Salary",
+   "format": "percent"
+  },
+  {
+   "name": "Avg Tenure",
+   "kind": "agg",
+   "agg": "AVERAGE",
+   "column": "Tenure Years",
+   "format": "decimal"
+  }
+ ],
+ "targets": [
+  {
+   "measure": "Headcount",
+   "value": 600,
+   "source": "kpi",
+   "label": "Headcount"
+  },
+  {
+   "measure": "Avg Salary",
+   "value": 64500,
+   "source": "kpi",
+   "label": "Avg Salary"
+  },
+  {
+   "measure": "Bonus %",
+   "value": 0.07,
+   "source": "kpi",
+   "label": "Bonus %"
+  },
+  {
+   "measure": "Avg Tenure",
+   "value": 4.2,
+   "source": "kpi",
+   "label": "Avg Tenure"
+  },
+  {
+   "measure": "Avg Salary",
+   "value": 82000,
+   "source": "chart",
+   "label": "Avg salary by dept",
+   "filters": [
+    {
+     "column": "Department",
+     "value": "Engineering"
+    }
+   ]
+  },
+  {
+   "measure": "Avg Salary",
+   "value": 61000,
+   "source": "chart",
+   "label": "Avg salary by dept",
+   "filters": [
+    {
+     "column": "Department",
+     "value": "Sales"
+    }
+   ]
+  },
+  {
+   "measure": "Avg Salary",
+   "value": 47000,
+   "source": "chart",
+   "label": "Avg salary by dept",
+   "filters": [
+    {
+     "column": "Department",
+     "value": "Support"
+    }
+   ]
+  },
+  {
+   "measure": "Total Salary",
+   "value": 19000000,
+   "source": "chart",
+   "label": "Salary by Gender",
+   "filters": [
+    {
+     "column": "Gender",
+     "value": "Female"
+    }
+   ]
+  },
+  {
+   "measure": "Headcount",
+   "value": 250,
+   "source": "chart",
+   "label": "Headcount by Level",
+   "filters": [
+    {
+     "column": "Level",
+     "value": "Junior"
+    }
+   ]
+  }
+ ]
+}
