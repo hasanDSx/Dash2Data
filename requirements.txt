@@ -1,6 +1,6 @@
-streamlit
-pandas
-google-genai
-openpyxl
-pillow
-python-dotenv
+streamlit>=1.51
+pandas>=2.2
+numpy>=1.26
+openpyxl>=3.1
+google-genai>=1.0
+python-dotenv>=1.0
